@@ -173,7 +173,7 @@ namespace Service
                 }
                 if (delay > 0) Thread.Sleep(delay);
 
-                var fullFrames = new FullFrameCaptureLoop(hyperHdrTarget, videoPoints, status, log);
+                var fullFrames = new FullFrameCaptureLoop(hyperHdrTarget, videoPoints, status, log, ProbeLauncher.Open);
                 fullFrames.Start();
                 var fullFrameCancellation = token.Register(fullFrames.RequestStop);
                 try

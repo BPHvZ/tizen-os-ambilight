@@ -44,9 +44,12 @@ dotnet build "$WORK/service/Service.csproj" -c Release -v:m -nologo
 TPK="$(find "$WORK/service/bin/Release" -name '*.tpk' | head -n 1)"
 [ -n "$TPK" ] || { echo "no .tpk built" >&2; exit 1; }
 unzip -l "$TPK"
-for f in tizen-manifest.xml bin/Service.dll bin/Google.FlatBuffers.dll res/ambilight.json shared/res/Service.png; do
+for f in tizen-manifest.xml VideoProbe.deps.json bin/Service.dll bin/VideoProbe.dll bin/Google.FlatBuffers.dll res/ambilight.json shared/res/Service.png; do
     unzip -l "$TPK" | grep -q " $f\$" || { echo "$f is missing from the .tpk" >&2; exit 1; }
 done
+unzip -p "$TPK" tizen-manifest.xml | grep -q 'appid="fCAYP0k0uD.VideoProbe"' || {
+    echo "video probe service is missing from the .tpk manifest" >&2; exit 1;
+}
 
 echo "== Launcher"
 # tv/app (Preact) builds the web app into tv/ui, next to config.xml and icon.png.
@@ -77,7 +80,7 @@ run_cli "$TZ" pack -t wgt -k "$TPK" -b "$WORK/web.wgt" -o "$WGT"
 NAME="ambilight-tv-v$VERSION.wgt"
 cp "$WGT" "$OUT/$NAME"
 unzip -l "$OUT/$NAME"
-for f in config.xml index.html assets/app.js assets/app.css Service.dll ambilight.json; do
+for f in config.xml index.html assets/app.js assets/app.css Service.dll VideoProbe.dll VideoProbe.deps.json ambilight.json; do
     unzip -l "$OUT/$NAME" | grep -q "$f" || { echo "$f is missing from the .wgt" >&2; exit 1; }
 done
 (cd "$OUT" && sha256sum "$NAME" > SHA256SUMS-tv.txt)

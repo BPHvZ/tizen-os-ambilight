@@ -82,6 +82,9 @@ export function buildSetOutputsRequest(outputs: ServiceOutputs, options: Command
   if (hyperhdr.priority !== undefined && typeof hyperhdr.priority !== 'number') {
     throw new TypeError('outputs.hyperhdr.priority must be a number')
   }
+  if (hyperhdr.fullFrame !== undefined && typeof hyperhdr.fullFrame !== 'boolean') {
+    throw new TypeError('outputs.hyperhdr.fullFrame must be a boolean')
+  }
   const payload: ServiceOutputs = {
     esp32: { enabled: esp32.enabled },
     hyperhdr: {
@@ -89,6 +92,7 @@ export function buildSetOutputsRequest(outputs: ServiceOutputs, options: Command
       host: hyperhdr.host,
       port: hyperhdr.port,
       ...(hyperhdr.priority !== undefined ? { priority: hyperhdr.priority } : {}),
+      ...(hyperhdr.fullFrame !== undefined ? { fullFrame: hyperhdr.fullFrame } : {}),
     },
   }
   return [
@@ -172,6 +176,7 @@ function checkServiceStatus(s: Json): ServiceStatus {
   const oh = object(o.hyperhdr, 'status.outputs.hyperhdr')
   expect(typeof oh.enabled === 'boolean' && typeof oh.host === 'string', 'status.outputs.hyperhdr')
   expect(typeof oh.port === 'number' && typeof oh.priority === 'number', 'status.outputs.hyperhdr port / priority')
+  expect(oh.fullFrame === undefined || typeof oh.fullFrame === 'boolean', 'status.outputs.hyperhdr.fullFrame')
   return s as unknown as ServiceStatus
 }
 

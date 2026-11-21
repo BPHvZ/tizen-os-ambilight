@@ -1,18 +1,11 @@
 using System;
-using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using static System.FormattableString;
 
 namespace Service
 {
-    interface IVideoCaptureSource : IDisposable
-    {
-        bool TryCapture(out PixelFrame frame, out string error);
-    }
-
-    // The undocumented ABI must be explicitly trusted for this exact library build.
-    sealed class VideoCapture : IVideoCaptureSource
+    // Used only by the separately launched video-probe service process.
+    sealed class VideoCapture : IDisposable
     {
         private const string LibraryName = "/usr/lib/libvideo-capture.so.0.1.0";
         private const string CaptureSymbol = "secvideo_api_capture_video_main";
@@ -71,7 +64,7 @@ namespace Service
             }
         }
 
-        public static VideoCapture TryOpen(string trustedLibrarySha256, out string error)
+        public static VideoCapture TryOpen(out string error)
         {
             error = null;
             if (IntPtr.Size != 4 || RuntimeInformation.ProcessArchitecture != Architecture.Arm)
@@ -79,8 +72,6 @@ namespace Service
                 error = $"{CaptureSymbol} requires a 32-bit ARM process";
                 return null;
             }
-            if (!VerifyLibrary(LibraryName, trustedLibrarySha256, out error)) return null;
-
             IntPtr library = NativeLibraryHelper.Load(LibraryName, out string loadError);
             if (library == IntPtr.Zero)
             {
@@ -174,37 +165,11 @@ namespace Service
             if (_library != IntPtr.Zero) { NativeLibrary.Free(_library); _library = IntPtr.Zero; }
         }
 
-        internal static bool IsSha256(string value)
-        {
-            if (value == null || value.Length != 64) return false;
-            foreach (char c in value)
-                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
-                    return false;
-            return true;
-        }
-
         internal static bool HasFrameData(byte[] yPlane, int yBytes, byte[] uvPlane, int uvBytes)
         {
             for (int i = 0; i < yBytes; i++) if (yPlane[i] != 0) return true;
             for (int i = 0; i < uvBytes; i++) if (uvPlane[i] != 0) return true;
             return false;
-        }
-
-        internal static bool VerifyLibrary(string path, string trustedSha256, out string error)
-        {
-            if (!IsSha256(trustedSha256))
-                return Fail("no trusted video-capture library SHA-256 configured; using PPI", out error);
-            try
-            {
-                using var hash = SHA256.Create();
-                using var file = File.OpenRead(path);
-                string actual = BitConverter.ToString(hash.ComputeHash(file)).Replace("-", "");
-                if (!string.Equals(actual, trustedSha256, StringComparison.OrdinalIgnoreCase))
-                    return Fail("video-capture library SHA-256 does not match the trusted build; using PPI", out error);
-            }
-            catch (Exception ex) { return Fail($"cannot verify video-capture library: {ex.Message}", out error); }
-            error = null;
-            return true;
         }
 
         private static unsafe void Clear(IntPtr buffer, int size) => new Span<byte>(buffer.ToPointer(), size).Clear();

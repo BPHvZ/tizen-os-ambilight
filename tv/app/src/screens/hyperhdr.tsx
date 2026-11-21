@@ -29,12 +29,12 @@ export const draftDirty = (d: HyperHdrDraft, h: HyperHdrOutputSettingsInEffect) 
  * The draft as set-outputs settings, or the reason it can't be sent. Only the number format is
  * checked here; ranges and the required host are the service's (its error text is shown).
  */
-export function settingsOf(d: HyperHdrDraft, enabled: boolean): HyperHdrOutputSettings | string {
+export function settingsOf(d: HyperHdrDraft, enabled: boolean, fullFrame?: boolean): HyperHdrOutputSettings | string {
   const port = d.port.trim();
   const priority = d.priority.trim();
   if (!/^\d+$/.test(port)) return 'The port must be a number, 19400 by default.';
   if (!/^\d+$/.test(priority)) return 'The priority must be a number from 50 to 250.';
-  return { enabled, host: d.host.trim(), port: +port, priority: +priority };
+  return { enabled, host: d.host.trim(), port: +port, priority: +priority, ...(fullFrame === undefined ? {} : { fullFrame }) };
 }
 
 /** The outputs in effect with one part replaced, as set-outputs takes them. */

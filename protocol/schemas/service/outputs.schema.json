@@ -31,7 +31,8 @@
         "enabled": { "type": "boolean", "description": "Stream to HyperHDR." },
         "host": { "$ref": "#/$defs/hyperhdrHost" },
         "port": { "$ref": "#/$defs/hyperhdrPort" },
-        "priority": { "$ref": "#/$defs/hyperhdrPriority" }
+        "priority": { "$ref": "#/$defs/hyperhdrPriority" },
+        "fullFrame": { "type": "boolean", "default": false, "description": "Opt in to isolated video-plane capture; PPI remains the fallback." }
       }
     },
     "hyperhdrHost": {

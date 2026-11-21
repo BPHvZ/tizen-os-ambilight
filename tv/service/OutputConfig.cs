@@ -23,8 +23,8 @@ namespace Service
     //
     // Same keys, ranges and defaults in both. The strict form takes no unknown keys and needs
     // every section and key except hyperhdr.priority. It holds only what set-outputs sets
-    // (esp32.enabled, hyperhdr.enabled / host / port / priority); everything else, like the
-    // HyperHDR image size and trusted library fingerprint, comes from res/ambilight.json, so a
+    // (esp32.enabled, hyperhdr.enabled / host / port / priority / fullFrame); everything else,
+    // like the HyperHDR image size, comes from res/ambilight.json, so a
     // newer package's values apply even after set-outputs. Saved files from older versions also carry
     // hyperhdr.imageWidth / imageHeight: those keys are accepted and ignored.
     // Tizen-independent, so it is unit-tested in CI.
@@ -122,7 +122,7 @@ namespace Service
         // The "outputs" value of the set-outputs command (protocol/schemas/service/outputs.schema.json):
         //   {"esp32": {"enabled": bool}, "hyperhdr": {"enabled": bool, "host": string, "port": int, "priority"?: int}}
         // Returns null and the new settings (Source = Saved), or the errors, "; "-separated.
-        // Package-only image dimensions and library fingerprint stay from the current settings.
+        // Package-only image dimensions stay from the current settings.
         public static string ParseCommand(string json, HyperHdrSettings packageSettings, out OutputConfig cfg) =>
             ParseStrict(json, false, packageSettings, out cfg);
 
@@ -152,8 +152,8 @@ namespace Service
 
                 if (Section(root, "hyperhdr", errors, out var hyper))
                 {
-                    if (savedFile) OnlyKeys(hyper, "hyperhdr.", errors, "enabled", "host", "port", "priority", "imageWidth", "imageHeight");
-                    else OnlyKeys(hyper, "hyperhdr.", errors, "enabled", "host", "port", "priority");
+                    if (savedFile) OnlyKeys(hyper, "hyperhdr.", errors, "enabled", "host", "port", "priority", "fullFrame", "imageWidth", "imageHeight");
+                    else OnlyKeys(hyper, "hyperhdr.", errors, "enabled", "host", "port", "priority", "fullFrame");
 
                     var s = new HyperHdrSettings();
                     bool enabled = StrictBool(hyper, "enabled", "hyperhdr", errors);
@@ -163,11 +163,13 @@ namespace Service
                     else { s.Host = host.GetString().Trim(); hostOk = true; }
                     s.Port = StrictInt(hyper, "port", null, 1, 65535, errors);
                     s.Priority = StrictInt(hyper, "priority", s.Priority, HyperHdrProtocol.MinPriority, HyperHdrProtocol.MaxPriority, errors);
+                    s.FullFrameEnabled = hyper.TryGetProperty("fullFrame", out _)
+                        ? StrictBool(hyper, "fullFrame", "hyperhdr", errors)
+                        : !savedFile && packageSettings != null && packageSettings.FullFrameEnabled;
                     if (packageSettings != null)
                     {
                         s.ImageWidth = packageSettings.ImageWidth;
                         s.ImageHeight = packageSettings.ImageHeight;
-                        s.VideoCaptureLibrarySha256 = packageSettings.VideoCaptureLibrarySha256;
                     }
                     if (enabled && hostOk && s.Host.Length == 0)
                         errors.Add("hyperhdr.host is required when hyperhdr.enabled is true");
@@ -212,6 +214,7 @@ namespace Service
             w.WriteString("host", HyperHdr.Host);
             w.WriteNumber("port", HyperHdr.Port);
             w.WriteNumber("priority", HyperHdr.Priority);
+            w.WriteBoolean("fullFrame", HyperHdr.FullFrameEnabled);
             w.WriteEndObject();
             w.WriteEndObject();
         }
@@ -229,6 +232,7 @@ namespace Service
             w.WriteString("host", HyperHdr.Host);
             w.WriteNumber("port", HyperHdr.Port);
             w.WriteNumber("priority", HyperHdr.Priority);
+            w.WriteBoolean("fullFrame", HyperHdr.FullFrameEnabled);
             w.WriteEndObject();
             w.WriteEndObject();
         }
@@ -297,14 +301,14 @@ namespace Service
         public int Priority { get; internal set; } = 150;
         public int ImageWidth { get; internal set; } = 64;
         public int ImageHeight { get; internal set; } = 36;
-        public string VideoCaptureLibrarySha256 { get; internal set; } = "";
+        public bool FullFrameEnabled { get; internal set; }
         public string Origin => "Tizen Ambilight";
 
         // Same target and image: an output running with other's settings can be kept as it is.
         public bool SameAs(HyperHdrSettings other) =>
             other != null && Enabled == other.Enabled && Host == other.Host && Port == other.Port
             && Priority == other.Priority && ImageWidth == other.ImageWidth && ImageHeight == other.ImageHeight
-            && VideoCaptureLibrarySha256 == other.VideoCaptureLibrarySha256;
+            && FullFrameEnabled == other.FullFrameEnabled;
 
         // Lenient parse of res/ambilight.json's hyperhdr section. The problems that affect the
         // package-only settings also go to packageWarnings (see OutputConfig.LoadEffective).
@@ -320,6 +324,7 @@ namespace Service
 
             bool valid = true;
             bool enabled = OutputConfig.GetBool(obj, "enabled", false, "hyperhdr", warnings);
+            s.FullFrameEnabled = OutputConfig.GetBool(obj, "fullFrame", false, "hyperhdr", warnings);
 
             if (obj.TryGetProperty("host", out var host))
             {
@@ -333,18 +338,6 @@ namespace Service
             s.ImageHeight = OutputConfig.GetInt(obj, "imageHeight", s.ImageHeight, EdgeImage.MinSize, EdgeImage.MaxSize, "hyperhdr", sizeWarnings, ref valid);
             warnings.AddRange(sizeWarnings);
             foreach (var w in sizeWarnings) packageWarnings.Add($"{w} — using the default");
-
-            if (obj.TryGetProperty("videoCaptureLibrarySha256", out var fingerprint))
-            {
-                string value = fingerprint.ValueKind == JsonValueKind.String ? fingerprint.GetString()?.Trim() : null;
-                if (value != "" && !VideoCapture.IsSha256(value))
-                {
-                    const string warning = "hyperhdr.videoCaptureLibrarySha256 must be empty or a 64-digit SHA-256 — full-frame capture disabled";
-                    warnings.Add(warning);
-                    packageWarnings.Add(warning);
-                }
-                else s.VideoCaptureLibrarySha256 = value;
-            }
 
             if (enabled && string.IsNullOrEmpty(s.Host))
             {

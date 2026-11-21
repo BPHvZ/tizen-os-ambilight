@@ -66,6 +66,17 @@ describe('requests', () => {
     assert.deepEqual(JSON.parse(items[2]!.value as string), fixture('service/outputs.hyperhdr-only'))
   })
 
+  it('sends the full-frame opt-in and rejects a non-boolean value', () => {
+    const outputs = fixture<ServiceOutputs>('service/outputs')
+    const enabled = { ...outputs, hyperhdr: { ...outputs.hyperhdr, fullFrame: true } }
+    const items = buildSetOutputsRequest(enabled)
+    assert.equal(JSON.parse(items[2]!.value as string).hyperhdr.fullFrame, true)
+    assert.throws(() => buildSetOutputsRequest({
+      ...enabled,
+      hyperhdr: { ...enabled.hyperhdr, fullFrame: 'yes' } as unknown as ServiceOutputs['hyperhdr'],
+    }), TypeError)
+  })
+
   it('rejects what is not ServiceOutputs at all', () => {
     const good = fixture<ServiceOutputs>('service/outputs')
     const bad: unknown[] = [
@@ -167,6 +178,7 @@ describe('parseServiceStatus', () => {
     ['a missing outputs', (s) => { delete s.outputs }],
     ['an unknown outputs.source', (s) => { s.outputs.source = 'cloud' }],
     ['outputs.hyperhdr without priority', (s) => { delete s.outputs.hyperhdr.priority }],
+    ['outputs.hyperhdr fullFrame that is not boolean', (s) => { s.outputs.hyperhdr.fullFrame = 'yes' }],
     ['outputs.esp32 that is not an object', (s) => { s.outputs.esp32 = true }],
   ]
   for (const [what, mutate] of bad) {

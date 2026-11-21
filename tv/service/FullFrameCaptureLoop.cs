@@ -5,7 +5,7 @@ namespace Service
 {
     interface IHyperHdrFrameTarget
     {
-        string VideoCaptureLibrarySha256 { get; }
+        bool FullFrameEnabled { get; }
         void Offer(HyperHdrFrame frame);
     }
 
@@ -45,12 +45,13 @@ namespace Service
 
     sealed class FullFrameCaptureLoop : IDisposable
     {
-        internal delegate IVideoCaptureSource OpenVideo(string fingerprint, out string error);
+        internal delegate IVideoCaptureSource OpenVideo(out string error);
         private const int CaptureIntervalMs = 150;
         private const int OpenRetryMs = 5000;
         private const int MaximumEdgeAgeMs = 1000;
         private const int WorkerStallMs = 1000;
         private const int StopWaitMs = 1000;
+        private const int MaximumProbeFailures = 3;
         // A timed-out stop must not let a replacement worker overlap a still-running native call.
         private static int _captureOwner;
         private readonly Func<IHyperHdrFrameTarget> _target;
@@ -79,19 +80,16 @@ namespace Service
         }
 
         public FullFrameCaptureLoop(Func<IHyperHdrFrameTarget> target, CapturePoint[] points,
-            CaptureStatus status, Action<string, string> log, OpenVideo open = null, int openRetryMs = OpenRetryMs)
+            CaptureStatus status, Action<string, string> log, OpenVideo open, int openRetryMs = OpenRetryMs)
         {
             _target = target;
             _points = points;
             _status = status;
             _log = log;
-            _open = open ?? OpenCapture;
+            _open = open ?? throw new ArgumentNullException(nameof(open));
             if (openRetryMs < 1) throw new ArgumentOutOfRangeException(nameof(openRetryMs));
             _openRetryMs = openRetryMs;
         }
-
-        private static IVideoCaptureSource OpenCapture(string fingerprint, out string error) =>
-            VideoCapture.TryOpen(fingerprint, out error);
 
         public void Start()
         {
@@ -109,22 +107,21 @@ namespace Service
                 Reliable = reliable,
                 Ticks = now
             });
-            if (!_stop.IsCancellationRequested && now - Interlocked.Read(ref _lastWorkerStart) > WorkerStallMs)
+            var target = !_stop.IsCancellationRequested ? _target() : null;
+            if (target != null && (!target.FullFrameEnabled ||
+                now - Interlocked.Read(ref _lastWorkerStart) > WorkerStallMs))
             {
-                var target = _target();
-                if (target != null)
+                bool stalled = target.FullFrameEnabled;
+                bool firstStall = stalled && Interlocked.Exchange(ref _stalled, 1) == 0;
+                try
                 {
-                    bool firstStall = Interlocked.Exchange(ref _stalled, 1) == 0;
-                    try
-                    {
-                        target.Offer(HyperHdrFrame.FromEdge(frame));
-                        _status.Backend("ppi-edge", "full-frame worker stalled");
-                    }
-                    catch (Exception ex)
-                    {
-                        _status.Backend("ppi-edge", $"PPI fallback delivery failed: {ex.Message}");
-                        if (firstStall) Console.Error.WriteLine($"[HyperHdrFallbackError] {ex.Message}");
-                    }
+                    target.Offer(HyperHdrFrame.FromEdge(frame));
+                    _status.Backend("ppi-edge", stalled ? "full-frame check is not responding" : null);
+                }
+                catch (Exception ex)
+                {
+                    _status.Backend("ppi-edge", $"PPI fallback delivery failed: {ex.Message}");
+                    if (firstStall || !stalled) Console.Error.WriteLine($"[HyperHdrFallbackError] {ex.Message}");
                 }
             }
             _wake.Set();
@@ -157,9 +154,12 @@ namespace Service
         private void Run()
         {
             IVideoCaptureSource source = null;
-            string fingerprint = null, openError = null, activeBackend = null, lastDetail = null;
+            string openError = null, activeBackend = null, lastDetail = null;
             long nextOpen = 0;
             bool ownsCapture = false;
+            bool fullFrameEnabled = false;
+            int probeFailures = 0;
+            IHyperHdrFrameTarget previousTarget = null;
             var selector = new FullFrameSelector();
             var wakeOrStop = new WaitHandle[] { _stop.Token.WaitHandle, _wake };
             try
@@ -170,23 +170,35 @@ namespace Service
                     try
                     {
                         var target = _target();
-                        if (target == null)
+                        if (!ReferenceEquals(previousTarget, target))
                         {
                             CloseSource(ref source, ref ownsCapture);
-                            fingerprint = openError = null;
+                            previousTarget = target;
+                            openError = null;
                             nextOpen = 0;
+                            fullFrameEnabled = false;
+                            probeFailures = 0;
+                            selector = new FullFrameSelector();
+                        }
+                        if (target == null || !target.FullFrameEnabled)
+                        {
+                            CloseSource(ref source, ref ownsCapture);
+                            openError = null;
+                            nextOpen = 0;
+                            fullFrameEnabled = false;
+                            probeFailures = 0;
                             selector = new FullFrameSelector();
                             Report("ppi-edge", null, ref activeBackend, ref lastDetail);
                         }
                         else
                         {
-                            string currentFingerprint = target.VideoCaptureLibrarySha256;
-                            if (fingerprint != currentFingerprint)
+                            if (!fullFrameEnabled)
                             {
                                 CloseSource(ref source, ref ownsCapture);
-                                fingerprint = currentFingerprint;
+                                fullFrameEnabled = true;
                                 openError = null;
                                 nextOpen = 0;
+                                probeFailures = 0;
                                 selector = new FullFrameSelector();
                             }
                             long start = Environment.TickCount64;
@@ -196,30 +208,48 @@ namespace Service
                                 if (!ownsCapture) openError = "previous full-frame worker is still stopping";
                                 else
                                 {
-                                    try { source = _open(fingerprint, out openError); }
+                                    try { source = _open(out openError); }
                                     catch (Exception ex) { openError = $"opening video capture failed: {ex.Message}"; }
                                     if (source == null)
                                     {
                                         if (openError == null) openError = "video capture is unavailable";
                                         CloseSource(ref source, ref ownsCapture);
+                                        probeFailures++;
                                     }
                                 }
-                                nextOpen = Environment.TickCount64 + _openRetryMs;
+                                nextOpen = probeFailures >= MaximumProbeFailures
+                                    ? long.MaxValue : Environment.TickCount64 + _openRetryMs;
+                                if (probeFailures >= MaximumProbeFailures)
+                                    openError = $"{openError}. Turn full-frame off and on to retry.";
                             }
 
                             PixelFrame pixels = null;
                             string error = openError;
                             bool usable = false;
+                            if (_stop.IsCancellationRequested) break;
+                            if (!ReferenceEquals(target, _target())) continue;
                             if (source != null)
                             {
                                 try { usable = source.TryCapture(out pixels, out error); }
                                 catch (Exception ex) { error = $"video capture failed: {ex.Message}"; }
+                                if (source.IsBroken)
+                                {
+                                    CloseSource(ref source, ref ownsCapture);
+                                    openError = error ?? "full-frame probe disconnected";
+                                    probeFailures++;
+                                    nextOpen = probeFailures >= MaximumProbeFailures
+                                        ? long.MaxValue : Environment.TickCount64 + _openRetryMs;
+                                    if (probeFailures >= MaximumProbeFailures)
+                                        openError = $"{openError}. Turn full-frame off and on to retry.";
+                                    error = openError;
+                                }
                             }
                             if (usable && pixels == null)
                             {
                                 usable = false;
                                 error = "video capture returned no image";
                             }
+                            if (usable) probeFailures = 0;
                             var edge = Volatile.Read(ref _edge);
                             if (usable && edge != null && IsDarkMismatch(pixels, edge.Frame, _points,
                                 edge.Reliable, Environment.TickCount64 - edge.Ticks))

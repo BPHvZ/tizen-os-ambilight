@@ -29,6 +29,9 @@ jobs:
       - name: Package tests
         run: npm run protocol:test
 
+      - name: TV remote navigation tests
+        run: npm --prefix tv/app test
+
       - name: UI kit (@ambilight/ui) type-check and tests
         working-directory: packages/ui
         run: npm ci && npm run type-check && npm test

@@ -1,0 +1,28 @@
+<Project Sdk="Tizen.NET.Sdk/1.1.9">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>tizen60</TargetFramework>
+    <LangVersion>10</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugType>None</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../VideoCapture.cs" Link="VideoCapture.cs" />
+    <Compile Include="../PixelFrame.cs" Link="PixelFrame.cs" />
+    <Compile Include="../EdgeFrame.cs" Link="EdgeFrame.cs" />
+    <Compile Include="../NativeLibraryHelper.cs" Link="NativeLibraryHelper.cs" />
+    <Compile Include="../ProbeWire.cs" Link="ProbeWire.cs" />
+    <TizenTpkUserIncludeFiles Include="../shared/res/Service.png">
+      <TizenTpkSubDir>shared/res</TizenTpkSubDir>
+    </TizenTpkUserIncludeFiles>
+  </ItemGroup>
+  <Target Name="IncludeProbeDependencies" BeforeTargets="TizenComputeTpkResourceFiles">
+    <ItemGroup>
+      <TizenTpkUserIncludeFiles Include="$(TargetDir)VideoProbe.deps.json">
+        <TizenTpkFileName>VideoProbe.deps.json</TizenTpkFileName>
+      </TizenTpkUserIncludeFiles>
+    </ItemGroup>
+  </Target>
+</Project>

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Copies the project version from the root package.json (bumped by changesets) into the TV
-// app manifests, so both apps of the TV package carry the release version:
+// app manifests, so all apps of the TV package carry the release version:
 //
 //   tv/ui/config.xml              <widget version="...">
 //   tv/service/tizen-manifest.xml <manifest version="...">
+//   tv/service/Probe/tizen-manifest.xml <manifest version="...">
 //
 // Runs as part of `npm run version-packages`, so the "chore: release" PR bumps them too.
 //   node scripts/sync-versions.mjs           update the manifests
@@ -26,6 +27,7 @@ if (!m || +m[1] > 255 || +m[2] > 255 || +m[3] > 65535) {
 const targets = [
   ['tv/ui/config.xml', 'widget'],
   ['tv/service/tizen-manifest.xml', 'manifest'],
+  ['tv/service/Probe/tizen-manifest.xml', 'manifest'],
 ];
 
 let stale = 0;

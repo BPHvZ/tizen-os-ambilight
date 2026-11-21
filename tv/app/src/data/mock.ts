@@ -12,6 +12,7 @@
 // ?outputs=package    never configured: ESP32 on, HyperHDR off, from res/ambilight.json (default)
 // ?outputs=both       saved: ESP32 and HyperHDR at 192.168.50.20 (connected)
 // ?outputs=hyperhdr   saved: HyperHDR only
+// ?probe=failed       show the isolated video probe's PPI fallback
 // A HyperHDR host connects 1 s after set-outputs if it starts with 192.168. or ends in .local;
 // any other host is refused.
 
@@ -63,6 +64,7 @@ function readMockOutputs(search: string): MockOutputs {
 
 export function createMock(state: MockState, preset: MockOutputs = readMockOutputs(location.search)): Backend {
   const t0 = Date.now();
+  const probeFailed = new URLSearchParams(location.search).get('probe') === 'failed';
   let serviceUp = state !== 'off';
   let paused = false;
   /** lost: the controller is gone from 2 s after start until "Search now". */
@@ -72,7 +74,7 @@ export function createMock(state: MockState, preset: MockOutputs = readMockOutpu
   const outputs: OutputsStatus = {
     source: preset === 'package' ? 'package' : 'saved',
     esp32: { enabled: preset !== 'hyperhdr' },
-    hyperhdr: { enabled: preset !== 'package', host: preset === 'package' ? '' : HYPERHDR_HOST, port: 19400, priority: 150 },
+    hyperhdr: { enabled: preset !== 'package', host: preset === 'package' ? '' : HYPERHDR_HOST, port: 19400, priority: 150, fullFrame: false },
   };
   /** When the HyperHDR target was last set (it connects a moment later). */
   let hyperHdrSince = t0 - 60000;
@@ -111,6 +113,8 @@ export function createMock(state: MockState, preset: MockOutputs = readMockOutpu
     if (paused) return { state: 'paused', failure: null, error: null, failedAttempts: 0, hw, frames };
     return {
       state: 'running', failure: null, error: null, failedAttempts: 0, hw, frames,
+      backend: outputs.hyperhdr.fullFrame && !probeFailed ? 'secvideo-nv12' : 'ppi-edge',
+      backendError: outputs.hyperhdr.fullFrame && probeFailed ? 'Full-frame check could not start' : null,
       frameMs: FRAME_MS, lastFrameAgoMs: (now - t0) % FRAME_MS, reads: 14, badReads: 0, lastBadRet: 0,
       h: 4, v: 3, rgb: SCENE.map((c, i) => drift(c, now - t0, i)).join(''),
     };
@@ -145,7 +149,7 @@ export function createMock(state: MockState, preset: MockOutputs = readMockOutpu
     }
     outputs.source = 'saved';
     outputs.esp32 = { enabled: o.esp32.enabled };
-    outputs.hyperhdr = { enabled: o.hyperhdr.enabled, host, port: o.hyperhdr.port, priority };
+    outputs.hyperhdr = { enabled: o.hyperhdr.enabled, host, port: o.hyperhdr.port, priority, fullFrame: o.hyperhdr.fullFrame ?? h.fullFrame ?? false };
     return delay({ ok: true, error: null }, 150);
   }
 

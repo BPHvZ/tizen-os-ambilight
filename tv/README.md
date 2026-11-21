@@ -33,7 +33,7 @@ int ppi_ve_get_rgb_measure_pixel(int idx, VEPPIRgbMeasure_t *rgb);
 
 This is the same mechanism that Samsung's **Hue Sync** app uses internally — discovered by decompiling `Tizen.TV.System.ContentAnalysis.dll`, the .NET wrapper Samsung provides to partner apps. We bypass the managed wrapper and call `libvideoenhance.so` directly via dlopen/P/Invoke. The full story is in [docs/RESEARCH.md](../docs/RESEARCH.md).
 
-For an explicitly trusted native library build, HyperHDR can also use Samsung's undocumented `secvideo_api_capture_video_main` API for a caller-buffered NV12 video plane. A separate worker downsamples the validated plane to at most 160×90 before RGB conversion and sending. This path requires a 32-bit ARM process and an exact configured library SHA-256; no library build is trusted by default, and a hash match is not proof of ABI compatibility. PPI sampling continues independently for the ESP32 and supplies HyperHDR's fallback when the plane is unavailable or rejected. See [docs/HYPERHDR.md](../docs/HYPERHDR.md) for limitations.
+When full-frame video is enabled in Outputs, HyperHDR can also use Samsung's undocumented `secvideo_api_capture_video_main` API for a caller-buffered NV12 video plane. An isolated helper process checks the API and performs every native capture; it downsamples the plane to at most 160×90 before RGB conversion and sending. The path requires a 32-bit ARM process, but no fingerprint configuration. PPI sampling continues independently for the ESP32 and supplies HyperHDR's fallback when the helper or plane is unavailable. Process isolation does not guarantee safety of the TV's shared video subsystem. See [docs/HYPERHDR.md](../docs/HYPERHDR.md) for limitations.
 
 ### Capture loop
 
@@ -79,7 +79,9 @@ Sample point counts, edge inset and capture delay are compile-time constants in 
 service/
   Service_App.cs      App lifecycle, outputs, HTTP event log
   Capture.cs          HW PPI edge capture plus optional full-frame capture coordination
-  VideoCapture.cs     Experimental secvideo NV12 adapter with fingerprint and layout checks
+  VideoCapture.cs     Experimental secvideo NV12 adapter compiled into the helper only
+  Probe/              Separate Tizen service app hosting the video-plane calls
+  ProbeCaptureClient.cs / ProbeWire.cs  Bounded helper protocol and fallback errors
   FullFrameCaptureLoop.cs  Independent video worker, source selection and PPI fallback
   PixelFrame.cs       Bounded RGB frame, NV12 validation/conversion, HyperHDR frame envelope
   CaptureLoop.cs      Runs capture on its own thread: retries, pause / resume, re-init
@@ -112,4 +114,4 @@ ui/
 
 ## Privilege
 
-The service manifest includes `http://developer.samsung.com/privilege/contentanalysis`, which Samsung lists as a partner privilege. In Developer Mode a regular **Public** Samsung distributor certificate bound to the TV's DUID is enough — see [docs/INSTALL.md](../docs/INSTALL.md#42-connect-and-create-a-certificate).
+The service manifest includes `http://developer.samsung.com/privilege/contentanalysis`, which Samsung lists as a partner privilege, and the public `http://tizen.org/privilege/appmanager.launch` for starting the video helper. In Developer Mode a regular **Public** Samsung distributor certificate bound to the TV's DUID has been sufficient for the existing PPI service; the experimental video helper may require Partner on some models. See [docs/INSTALL.md](../docs/INSTALL.md#42-connect-and-create-a-certificate).

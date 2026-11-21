@@ -27,6 +27,8 @@
     <Compile Include="../../../tv/service/PixelFrame.cs" />
     <Compile Include="../../../tv/service/NativeLibraryHelper.cs" />
     <Compile Include="../../../tv/service/VideoCapture.cs" />
+    <Compile Include="../../../tv/service/ProbeCaptureClient.cs" />
+    <Compile Include="../../../tv/service/ProbeWire.cs" />
     <Compile Include="../../../tv/service/FullFrameCaptureLoop.cs" />
     <Compile Include="../../../tv/service/HyperHdrProtocol.cs" />
     <Compile Include="../../../tv/service/HyperHdrOutput.cs" />

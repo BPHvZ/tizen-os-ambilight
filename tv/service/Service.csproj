@@ -32,6 +32,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="VideoCapture.cs;Probe/**/*.cs" />
+    <ProjectReference Include="Probe/VideoProbe.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Debug may use a local-only TV target; never package that config in Release. -->
     <None Remove="res/ambilight.Debug.private.json" Condition=" '$(Configuration)' != 'Debug' " />
     <Content Remove="res/ambilight.Debug.private.json" Condition=" '$(Configuration)' != 'Debug' " />

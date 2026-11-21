@@ -10,13 +10,14 @@ import type { OutputsStatus, ServiceOutputs } from '@ambilight/protocol';
 import { Footer } from '../components/Footer';
 import { type Controller, unreachable } from '../controllers';
 import type { ServiceLink } from '../data';
-import { EDGE_LEFT, type FocusGrid, step } from '../focus';
+import { EDGE_LEFT, step } from '../focus';
 import { controllerRow, controllerTitle, fps } from '../status';
 import {
   type EditEnd, Field, type FieldId, type HyperHdrDraft, connectionLine, draftDirty, draftOf, outputsWith, settingsOf,
   useLastReply,
 } from './hyperhdr';
 import { Setup } from './Setup';
+import { outputsFocusGrid } from './outputsFocus';
 import type { ScreenProps } from './types';
 import './outputs.css';
 
@@ -38,7 +39,7 @@ type Where = 'esp' | 'hdr' | 'blink';
 
 const OK_HINT: Record<string, string> = {
   'run-setup': 'Run setup', 'esp-switch': 'On / off', 'hdr-switch': 'On / off',
-  'esp-blink': 'Blink', 'esp-search': 'Search', 'hdr-test': 'Test',
+  'esp-blink': 'Blink', 'esp-search': 'Search', 'hdr-test': 'Test', 'hdr-fullframe': 'On / off',
 };
 
 export function Outputs(p: ScreenProps) {
@@ -69,27 +70,13 @@ export function Outputs(p: ScreenProps) {
 
   const espOn = !!outputs?.esp32.enabled;
   const hdrOn = !!outputs?.hyperhdr.enabled;
+  const fullFrameSupported = outputs?.hyperhdr.fullFrame !== undefined;
+  const fullFrameOn = outputs?.hyperhdr.fullFrame === true;
   const watching = Date.now() < testUntil;
 
   // ---------------------------------------------------------------- focus grid
   // Left column: the ESP32 card; right column: HyperHDR. ◀ from the left column → rail.
-  const grid: FocusGrid = [
-    [{ id: 'run-setup', col: 2 }],
-    [{ id: 'esp-switch', col: 0 }, { id: 'hdr-switch', col: 2 }],
-  ];
-  if (espOn) {
-    grid.push([
-      { id: 'esp-blink', col: 0, nav: { down: 'esp-blink' } },
-      { id: 'esp-search', col: 1, nav: { down: 'esp-search' } },
-      { id: 'hdr-host', col: 2 },
-    ]);
-  } else {
-    grid.push([{ id: 'hdr-host', col: 2, nav: { left: 'esp-switch' } }]);
-  }
-  const back = espOn ? 'esp-search' : 'esp-switch';
-  grid.push([{ id: 'hdr-port', col: 2, nav: { left: back } }]);
-  grid.push([{ id: 'hdr-priority', col: 2, nav: { left: back } }]);
-  grid.push([{ id: 'hdr-test', col: 2, nav: { left: back } }]);
+  const grid = outputsFocusGrid(espOn, fullFrameSupported);
   const ids = grid.flat().map((it) => it.id);
   const current = ids.includes(focus) ? focus : 'esp-switch';
   useEffect(() => { if (current !== focus) setFocus(current); }, [current]);
@@ -118,7 +105,7 @@ export function Outputs(p: ScreenProps) {
       apply('hdr', 'hdr-switch', outputsWith(outputs, { hyperhdr: { ...outputs.hyperhdr, enabled: false } }));
       return;
     }
-    const s = settingsOf(shown, true);
+    const s = settingsOf(shown, true, outputs.hyperhdr.fullFrame);
     if (typeof s === 'string') { setError({ where: 'hdr', text: s }); return; }
     apply('hdr', 'hdr-switch', outputsWith(outputs, { hyperhdr: s })).then((ok) => { if (ok) setTestUntil(Date.now() + TEST_MS); });
   };
@@ -126,9 +113,16 @@ export function Outputs(p: ScreenProps) {
   const test = async () => {
     if (!outputs || !shown) return;
     if (hdrOn && !dirty) { setError(null); setTestUntil(Date.now() + TEST_MS); return; }
-    const s = settingsOf(shown, true);
+    const s = settingsOf(shown, true, outputs.hyperhdr.fullFrame);
     if (typeof s === 'string') { setError({ where: 'hdr', text: s }); return; }
     if (await apply('hdr', 'hdr-test', outputsWith(outputs, { hyperhdr: s }))) setTestUntil(Date.now() + TEST_MS);
+  };
+
+  const toggleFullFrame = () => {
+    if (!outputs || !fullFrameSupported) return;
+    apply('hdr', 'hdr-fullframe', outputsWith(outputs, {
+      hyperhdr: { ...outputs.hyperhdr, fullFrame: !fullFrameOn },
+    }));
   };
 
   const blink = async () => {
@@ -171,6 +165,7 @@ export function Outputs(p: ScreenProps) {
     else if (id === 'esp-blink') blink();
     else if (id === 'esp-search') search();
     else if (id === 'hdr-test') test();
+    else if (id === 'hdr-fullframe') toggleFullFrame();
     else if (id.startsWith('hdr-')) startEdit(id.slice(4) as FieldId);
   };
 
@@ -202,6 +197,21 @@ export function Outputs(p: ScreenProps) {
 
   const conn = connectionLine(link, lastReplyAt, watching);
   const testLabel = busy === 'hdr-test' ? 'Applying…' : !hdrOn ? 'Turn on and test' : dirty ? 'Apply and test' : 'Test connection';
+  const capture = status?.capture;
+  const captureError = capture?.backendError;
+  const retryHint = 'Turn full-frame off and on to retry.';
+  const retry = captureError?.includes(retryHint) ?? false;
+  const reason = captureError?.replace(retryHint, '').trim();
+  const shortError = reason && reason.length > 120 ? `${reason.slice(0, 117)}…` : reason;
+  const frameDetail = !status ? 'Start the TV service to change this setting.'
+    : !fullFrameSupported ? 'Update the TV service to use full-frame video.'
+    : !fullFrameOn ? 'Experimental · tests video capture, falls back to spots'
+      : !hdrOn ? 'Turn on HyperHDR to check video capture.'
+        : capture?.state === 'paused' ? 'Paused · resume capture to check.'
+          : capture?.state === 'failed' ? `Capture unavailable · ${capture.error ?? 'The TV capture did not start.'}`
+          : capture?.backend === 'secvideo-nv12' ? 'Full-frame video is active.'
+            : shortError ? `Using spot colors · ${shortError}${retry ? ' Turn off and on to retry.' : ''}`
+              : 'Checking video capture…';
 
   return (
     <main class="main outputs">
@@ -294,6 +304,16 @@ export function Outputs(p: ScreenProps) {
                 onEnd={endEdit}
               />
             ))}
+          </div>
+
+          <div class={`out-frame${f('hdr-fullframe') ? ' focused' : ''}`} role="switch"
+               aria-checked={fullFrameOn} aria-disabled={!fullFrameSupported || !!busy}
+               aria-label="Full-frame video" aria-describedby="hdr-fullframe-detail">
+            <div class="out-frame-text">
+              <span class="out-field-label">Full-frame video</span>
+              <span id="hdr-fullframe-detail" class="out-frame-detail" role="status">{frameDetail}</span>
+            </div>
+            <span class="out-switch"><Switch on={fullFrameOn} accent /></span>
           </div>
 
           <div class="out-conn" role="status">

@@ -7,9 +7,11 @@
 //   dotnet run -- -e2e HOST PORT HTTP   live session against a running HyperHDR
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
-using System.Security.Cryptography;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -23,6 +25,8 @@ namespace Service
 
         static int Main(string[] args)
         {
+            if (args.Length == 4 && args[0] == "-probe-child")
+                return ProbeChild(args[1], int.Parse(args[2]), args[3]);
             if (args.Length >= 1 && args[0] == "-frame-e2e")
                 return FullFrameEndToEnd(args[1], int.Parse(args[2]));
             if (args.Length >= 1 && args[0] == "-e2e")
@@ -34,7 +38,7 @@ namespace Service
             HyperHdrFrameTests();
             FullFrameSelectionTests();
             FullFrameWorkerTests();
-            VideoLibraryTrustTests();
+            ProbeProcessTests();
             ProtocolTests();
             ConfigTests();
             CommandConfigTests();
@@ -261,6 +265,7 @@ namespace Service
             public readonly ManualResetEventSlim Entered = new ManualResetEventSlim(false);
             public readonly ManualResetEventSlim Release = new ManualResetEventSlim(false);
             public int Disposed;
+            public bool IsBroken => false;
             public bool TryCapture(out PixelFrame frame, out string error)
             {
                 Entered.Set();
@@ -274,7 +279,7 @@ namespace Service
 
         private sealed class FakeFrameTarget : IHyperHdrFrameTarget
         {
-            public string VideoCaptureLibrarySha256 => "test";
+            public bool FullFrameEnabled { get; set; } = true;
             public int Offers;
             public int VideoOffers;
             public int EdgeOffers;
@@ -290,6 +295,7 @@ namespace Service
 
         private sealed class ReadyVideoSource : IVideoCaptureSource
         {
+            public bool IsBroken => false;
             public PixelFrame Frame = new PixelFrame(2, 2,
                 new byte[] { 100, 0, 0, 100, 0, 0, 100, 0, 0, 100, 0, 0 });
             public bool TryCapture(out PixelFrame frame, out string error)
@@ -303,12 +309,30 @@ namespace Service
 
         private static void FullFrameWorkerTests()
         {
+            var defaultTarget = new FakeFrameTarget { FullFrameEnabled = false };
+            int defaultOpens = 0;
+            IVideoCaptureSource OpenDisabled(out string error)
+            {
+                Interlocked.Increment(ref defaultOpens);
+                error = null;
+                return new ReadyVideoSource();
+            }
+            using (var worker = new FullFrameCaptureLoop(() => defaultTarget, new CapturePoint[14],
+                   new CaptureStatus(), (eventName, detail) => { }, OpenDisabled))
+            {
+                worker.Start();
+                worker.OfferEdge(DistinctFrame(), true);
+                Check(WaitFor(() => Volatile.Read(ref defaultTarget.EdgeOffers) > 0)
+                      && Volatile.Read(ref defaultOpens) == 0,
+                    "full-frame off streams normal PPI without launching the probe");
+            }
+
             var source = new FakeVideoSource();
             IHyperHdrFrameTarget current = new FakeFrameTarget();
             var old = (FakeFrameTarget)current;
             int attempts = 0;
             long firstOpen = 0, secondOpen = 0;
-            IVideoCaptureSource Open(string fingerprint, out string error)
+            IVideoCaptureSource Open(out string error)
             {
                 if (Interlocked.Increment(ref attempts) == 1)
                 {
@@ -347,7 +371,7 @@ namespace Service
 
             var pausedSource = new FakeVideoSource();
             var pausedTarget = new FakeFrameTarget();
-            IVideoCaptureSource OpenPaused(string fingerprint, out string error)
+            IVideoCaptureSource OpenPaused(out string error)
             {
                 error = null;
                 return pausedSource;
@@ -371,7 +395,7 @@ namespace Service
             var stalledSource = new FakeVideoSource();
             var stalledTarget = new FakeFrameTarget { ThrowOnce = 1 };
             var stalledStatus = new CaptureStatus();
-            IVideoCaptureSource OpenStalled(string fingerprint, out string error)
+            IVideoCaptureSource OpenStalled(out string error)
             {
                 error = null;
                 return stalledSource;
@@ -390,24 +414,25 @@ namespace Service
                     }, 2500), "a stalled worker delivers PPI fallback even after a target error");
                     var j = JsonDocument.Parse(StatusJson.Build(stalledStatus.WriteJson)).RootElement;
                     Check(j.GetProperty("backend").GetString() == "ppi-edge"
-                          && j.GetProperty("backendError").GetString().Contains("stalled"),
+                          && j.GetProperty("backendError").GetString().Contains("not responding"),
                         "a stalled video worker is reported in capture status");
                 }
                 finally { stalledSource.Release.Set(); }
             }
 
             var oldSource = new FakeVideoSource();
+            var oldTarget = new FakeFrameTarget();
             var replacementSource = new ReadyVideoSource();
             var replacementTarget = new FakeFrameTarget();
             int replacementOpens = 0;
-            IVideoCaptureSource OpenOld(string fingerprint, out string error) { error = null; return oldSource; }
-            IVideoCaptureSource OpenReplacement(string fingerprint, out string error)
+            IVideoCaptureSource OpenOld(out string error) { error = null; return oldSource; }
+            IVideoCaptureSource OpenReplacement(out string error)
             {
                 Interlocked.Increment(ref replacementOpens);
                 error = null;
                 return replacementSource;
             }
-            var oldWorker = new FullFrameCaptureLoop(() => new FakeFrameTarget(), points,
+            var oldWorker = new FullFrameCaptureLoop(() => oldTarget, points,
                 new CaptureStatus(), (eventName, detail) => { }, OpenOld);
             oldWorker.Start();
             try
@@ -437,7 +462,7 @@ namespace Service
             var readySource = new ReadyVideoSource();
             var status = new CaptureStatus();
             int videoLogs = 0;
-            IVideoCaptureSource OpenReady(string fingerprint, out string error)
+            IVideoCaptureSource OpenReady(out string error)
             {
                 error = null;
                 return readySource;
@@ -476,7 +501,7 @@ namespace Service
             var recoveringTarget = new FakeFrameTarget { ThrowOnce = 1 };
             var recoveringSource = new ReadyVideoSource();
             int workerErrors = 0;
-            IVideoCaptureSource OpenRecovering(string fingerprint, out string error)
+            IVideoCaptureSource OpenRecovering(out string error)
             {
                 error = null;
                 return recoveringSource;
@@ -495,14 +520,15 @@ namespace Service
             }
 
             var unavailableTarget = new FakeFrameTarget();
+            var unavailableStatus = new CaptureStatus();
             int unavailableOpens = 0, unavailableLogs = 0;
-            IVideoCaptureSource OpenUnavailable(string fingerprint, out string error)
+            IVideoCaptureSource OpenUnavailable(out string error)
             {
                 Interlocked.Increment(ref unavailableOpens);
                 error = "not ready";
                 return null;
             }
-            using (var worker = new FullFrameCaptureLoop(() => unavailableTarget, points, new CaptureStatus(),
+            using (var worker = new FullFrameCaptureLoop(() => unavailableTarget, points, unavailableStatus,
                    (eventName, detail) =>
                    {
                        if (detail.Contains("not ready")) Interlocked.Increment(ref unavailableLogs);
@@ -510,34 +536,150 @@ namespace Service
             {
                 worker.Start();
                 worker.OfferEdge(DistinctFrame(), true);
-                Check(WaitFor(() => Volatile.Read(ref unavailableOpens) >= 3)
-                      && Volatile.Read(ref unavailableTarget.EdgeOffers) > 0
-                      && Volatile.Read(ref unavailableLogs) == 1,
-                    "repeated identical open failures keep PPI active without flooding the log");
+                Check(WaitFor(() =>
+                {
+                    var state = JsonDocument.Parse(StatusJson.Build(unavailableStatus.WriteJson)).RootElement;
+                    return Volatile.Read(ref unavailableOpens) >= 3
+                           && (state.GetProperty("backendError").GetString()?.Contains("off and on") ?? false);
+                }) && Volatile.Read(ref unavailableTarget.EdgeOffers) > 0,
+                    "repeated failed probe starts keep PPI active and explain how to retry");
+                Thread.Sleep(300);
+                Check(Volatile.Read(ref unavailableOpens) == 3 && Volatile.Read(ref unavailableLogs) == 2,
+                    "repeated failures stop retrying and do not flood the log");
+                unavailableTarget.FullFrameEnabled = false;
+                worker.OfferEdge(DistinctFrame(), true);
+                Check(WaitFor(() => JsonDocument.Parse(StatusJson.Build(unavailableStatus.WriteJson)).RootElement
+                    .GetProperty("backendError").ValueKind == JsonValueKind.Null),
+                    "turning full-frame off clears the failure");
+                unavailableTarget.FullFrameEnabled = true;
+                worker.OfferEdge(DistinctFrame(), true);
+                Check(WaitFor(() => Volatile.Read(ref unavailableOpens) >= 4),
+                    "turning full-frame back on starts a new probe");
             }
         }
 
-        private static void VideoLibraryTrustTests()
+        private static int ProbeChild(string mode, int port, string nonce)
+        {
+            if (mode == "missing") return 71;
+            using var client = new TcpClient();
+            client.Connect(IPAddress.Loopback, port);
+            using var stream = client.GetStream();
+            byte[] token = Encoding.ASCII.GetBytes(mode == "wrong-nonce" ? new string('x', nonce.Length) : nonce);
+            stream.Write(token, 0, token.Length);
+            if (mode == "wrong-nonce") return 0;
+            if (stream.ReadByte() != ProbeWire.Capture) return 72;
+            if (mode == "crash") { Process.GetCurrentProcess().Kill(); return 73; }
+            if (mode == "timeout") { Thread.Sleep(1500); return 0; }
+            if (mode == "unavailable") { ProbeWire.WriteError(stream, "capture library missing", true); return 0; }
+            if (mode == "bad-frame")
+            {
+                using var writer = new BinaryWriter(stream, Encoding.UTF8, true);
+                writer.Write((byte)0); writer.Write(int.MaxValue); writer.Write(1); writer.Write(3); writer.Flush();
+                return 0;
+            }
+            ProbeWire.WriteFrame(stream, new PixelFrame(2, 2, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }));
+            return stream.ReadByte() == ProbeWire.Stop ? 0 : 74;
+        }
+
+        private static Process StartProbeChild(string mode, int port, string nonce)
+        {
+            string executable = Environment.ProcessPath;
+            var start = new ProcessStartInfo(executable) { UseShellExecute = false };
+            if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(typeof(Program).Assembly.Location);
+            foreach (string arg in new[] { "-probe-child", mode, port.ToString(), nonce })
+                start.ArgumentList.Add(arg);
+            return Process.Start(start);
+        }
+
+        private static void ProbeProcessTests()
         {
             var missingLibrary = NativeLibraryHelper.Load("lib-ambilight-nonexistent-test.so", out var loadError);
             Check(missingLibrary == IntPtr.Zero && !string.IsNullOrWhiteSpace(loadError),
                 "native loader reports a useful error when a library is missing");
-            string path = Path.GetTempFileName();
-            try
+
+            foreach (string mode in new[] { "success", "missing", "wrong-nonce", "crash", "timeout", "unavailable", "bad-frame" })
             {
-                File.WriteAllText(path, "test library");
-                using var sha = SHA256.Create();
-                string hash = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(path))).Replace("-", "");
-                Check(!VideoCapture.VerifyLibrary(path, "", out var error) && error.Contains("no trusted"),
-                    "missing trusted library fingerprint fails closed");
-                Check(!VideoCapture.VerifyLibrary(path, new string('0', 64), out error) && error.Contains("does not match"),
-                    "a different library build fails closed");
-                Check(VideoCapture.VerifyLibrary(path, hash.ToLowerInvariant(), out error) && error == null,
-                    "an explicitly trusted exact library fingerprint matches case-insensitively");
-                File.AppendAllText(path, " changed");
-                Check(!VideoCapture.VerifyLibrary(path, hash, out error), "a changed library no longer matches");
+                Process child = null;
+                try
+                {
+                    void Launch(int port, string nonce)
+                    {
+                        child = StartProbeChild(mode, port, nonce);
+                    }
+                    using var probe = ProbeCaptureClient.Open(Launch, out string openError,
+                        timeoutMs: mode == "missing" ? 700 : 3000, captureTimeoutMs: mode == "timeout" ? 500 : 3000);
+                    Check(child != null && child.Id != Environment.ProcessId, $"{mode} probe runs in a separate OS process");
+                    if (mode == "missing" || mode == "wrong-nonce")
+                    {
+                        Check(probe == null && !string.IsNullOrEmpty(openError), $"{mode} probe fails with a visible startup error");
+                        continue;
+                    }
+                    if (probe == null)
+                    {
+                        Check(false, $"{mode} probe starts: {openError}");
+                        continue;
+                    }
+                    bool ok = probe.TryCapture(out var frame, out string error);
+                    if (mode == "success")
+                        Check(ok && frame.Width == 2 && frame.Height == 2 && frame.Rgb[11] == 12 && !probe.IsBroken,
+                            "isolated probe returns a validated frame");
+                    else
+                    {
+                        Check(!ok && frame == null && probe.IsBroken && !string.IsNullOrEmpty(error),
+                            $"{mode} probe fails closed and reports an error");
+                        if (mode == "crash")
+                            Check(child.WaitForExit(2000) && child.ExitCode != 0,
+                                "abrupt child termination does not terminate the service process");
+                    }
+                }
+                finally
+                {
+                    if (child != null)
+                    {
+                        if (!child.WaitForExit(2000)) { child.Kill(); child.WaitForExit(); }
+                        child.Dispose();
+                    }
+                }
             }
-            finally { File.Delete(path); }
+
+            foreach (string mode in new[] { "crash", "timeout" })
+                {
+                    Process child = null;
+                    int launches = 0;
+                    var target = new FakeFrameTarget();
+                    var status = new CaptureStatus();
+                    IVideoCaptureSource Open(out string error)
+                    {
+                        Interlocked.Increment(ref launches);
+                        return ProbeCaptureClient.Open((port, nonce) =>
+                            child = StartProbeChild(mode, port, nonce), out error, timeoutMs: 3000, captureTimeoutMs: 500);
+                    }
+                    using (var worker = new FullFrameCaptureLoop(() => target, new CapturePoint[14],
+                           status, (eventName, detail) => { }, Open, openRetryMs: 10000))
+                    {
+                        try
+                        {
+                            worker.Start();
+                            worker.OfferEdge(DistinctFrame(), true);
+                            Check(WaitFor(() =>
+                            {
+                                worker.OfferEdge(DistinctFrame(), true);
+                                var capture = JsonDocument.Parse(StatusJson.Build(status.WriteJson)).RootElement;
+                                return capture.GetProperty("backend").GetString() == "ppi-edge"
+                                       && (capture.GetProperty("backendError").GetString()?.Contains("probe") ?? false)
+                                       && Volatile.Read(ref target.EdgeOffers) > 0;
+                            }, 4000) && Volatile.Read(ref launches) == 1,
+                                $"{mode} subprocess failure reports PPI fallback in capture status");
+                        }
+                        finally
+                        {
+                            worker.RequestStop();
+                            if (child != null && !child.WaitForExit(2000)) { child.Kill(); child.WaitForExit(); }
+                            child?.Dispose();
+                    }
+                }
+            }
         }
 
         // ---------------------------------------------------------------- Protocol
@@ -600,15 +742,14 @@ namespace Service
 
             var ok = OutputConfig.Parse(@"{ ""hyperhdr"": { ""enabled"": true, ""host"": "" 192.168.1.50 "", ""priority"": 100 } }");
             Check(ok.HyperHdr.Enabled && ok.HyperHdr.Host == "192.168.1.50" && ok.HyperHdr.Priority == 100 && ok.HyperHdr.Port == 19400, "valid HyperHDR section is enabled, host trimmed, defaults kept");
-            Check(ok.HyperHdr.VideoCaptureLibrarySha256 == "", "full-frame library is not trusted by default");
-            string fingerprint = new string('a', 64);
-            var trusted = OutputConfig.Parse($@"{{ ""hyperhdr"": {{ ""videoCaptureLibrarySha256"": ""{fingerprint}"" }} }}");
-            Check(trusted.HyperHdr.VideoCaptureLibrarySha256 == fingerprint && trusted.Warnings.Count == 0,
-                "package can specify an explicitly trusted library fingerprint");
-            var badFingerprint = OutputConfig.Parse(@"{ ""hyperhdr"": { ""enabled"": true, ""host"": ""h"", ""videoCaptureLibrarySha256"": ""bad"" } }");
-            Check(badFingerprint.HyperHdr.Enabled && badFingerprint.HyperHdr.VideoCaptureLibrarySha256 == ""
-                  && badFingerprint.Warnings.Exists(w => w.Contains("full-frame capture disabled")),
-                "invalid library fingerprint disables full-frame only, preserving PPI output");
+            Check(!ok.HyperHdr.FullFrameEnabled, "full-frame capture is off by default");
+            var optedIn = OutputConfig.Parse(@"{ ""hyperhdr"": { ""fullFrame"": true } }");
+            Check(optedIn.HyperHdr.FullFrameEnabled && optedIn.Warnings.Count == 0,
+                "explicit full-frame opt-in is accepted");
+            var invalidOptIn = OutputConfig.Parse(@"{ ""hyperhdr"": { ""enabled"": true, ""host"": ""h"", ""fullFrame"": ""yes"" } }");
+            Check(invalidOptIn.HyperHdr.Enabled && !invalidOptIn.HyperHdr.FullFrameEnabled
+                  && invalidOptIn.Warnings.Exists(w => w.Contains("fullFrame")),
+                "invalid opt-in leaves the PPI output enabled and reports a warning");
 
             var noHost = OutputConfig.Parse(@"{ ""hyperhdr"": { ""enabled"": true } }");
             Check(!noHost.HyperHdr.Enabled && noHost.Warnings.Count > 0, "enabled without host → disabled with a warning");
@@ -651,11 +792,11 @@ namespace Service
             var custom = OutputConfig.Parse(@"{ ""hyperhdr"": { ""imageWidth"": 32, ""imageHeight"": 18 } }").HyperHdr;
             OutputConfig.ParseCommand(OutputsBoth, custom, out cfg);
             Check(cfg.HyperHdr.ImageWidth == 32 && cfg.HyperHdr.ImageHeight == 18, "set-outputs keeps the image size in effect");
-            string fingerprint = new string('b', 64);
-            custom = OutputConfig.Parse($@"{{ ""hyperhdr"": {{ ""videoCaptureLibrarySha256"": ""{fingerprint}"" }} }}").HyperHdr;
+            custom = OutputConfig.Parse(@"{ ""hyperhdr"": { ""fullFrame"": true } }").HyperHdr;
             OutputConfig.ParseCommand(OutputsBoth, custom, out cfg);
-            Check(cfg.HyperHdr.VideoCaptureLibrarySha256 == fingerprint,
-                "set-outputs preserves the package's trusted library fingerprint");
+            Check(cfg.HyperHdr.FullFrameEnabled, "older set-outputs clients preserve the current opt-in");
+            error = OutputConfig.ParseCommand(@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": true, ""host"": ""h"", ""port"": 19400, ""fullFrame"": true } }", null, out cfg);
+            Check(error == null && cfg.HyperHdr.FullFrameEnabled, "set-outputs can opt into full-frame capture");
 
             var rejected = new (string json, string expect, string what)[]
             {
@@ -672,6 +813,7 @@ namespace Service
                 (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 65536 } }", "hyperhdr.port must be an integer 1..65535", "port out of range"),
                 (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 19400.5 } }", "hyperhdr.port must be an integer", "a fractional port"),
                 (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 1, ""priority"": 49 } }", "hyperhdr.priority must be an integer 50..250", "priority out of range"),
+                (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 1, ""fullFrame"": 1 } }", "hyperhdr.fullFrame must be true or false", "a non-boolean opt-in"),
                 (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 1, ""imageWidth"": 32 } }", "unknown key hyperhdr.imageWidth", "the image size (not part of the command)"),
                 (@"{ ""esp32"": { ""enabled"": true, ""hosts"": [] }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 1 } }", "unknown key esp32.hosts", "an unknown key"),
                 (@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": false, ""host"": """", ""port"": 1 }, ""wled"": {} }", "unknown key wled", "an unknown section"),
@@ -725,7 +867,7 @@ namespace Service
             Check(!File.Exists(saved + ".tmp"), "saving leaves no temp file behind");
             var savedKeys = new List<string>();
             foreach (var p in JsonDocument.Parse(File.ReadAllText(saved)).RootElement.GetProperty("hyperhdr").EnumerateObject()) savedKeys.Add(p.Name);
-            Check(string.Join(",", savedKeys) == "enabled,host,port,priority", "the saved file holds only the set-outputs keys (no image size)");
+            Check(string.Join(",", savedKeys) == "enabled,host,port,priority,fullFrame", "the saved file holds output settings, including the opt-in");
             cfg = OutputConfig.LoadEffective(package, saved);
             Check(cfg.Source == OutputSource.Saved && cfg.Esp32Enabled && cfg.HyperHdr.Enabled && cfg.HyperHdr.Host == "192.168.1.50"
                   && cfg.HyperHdr.Port == 19400 && cfg.HyperHdr.Priority == 100 && cfg.Warnings.Count == 0,
@@ -740,13 +882,13 @@ namespace Service
             Check(cfg.Source == OutputSource.Saved && cfg.HyperHdr.Enabled && cfg.HyperHdr.Host == "192.168.1.50"
                   && cfg.HyperHdr.ImageWidth == 48 && cfg.HyperHdr.ImageHeight == 27 && cfg.Warnings.Count == 0,
                 "a newer package's image size applies over saved outputs; the saved target is kept");
-            string fingerprint = new string('c', 64);
-            File.WriteAllText(newer, $@"{{ ""hyperhdr"": {{ ""videoCaptureLibrarySha256"": ""{fingerprint}"" }} }}");
+            OutputConfig.ParseCommand(@"{ ""esp32"": { ""enabled"": true }, ""hyperhdr"": { ""enabled"": true, ""host"": ""h"", ""port"": 19400, ""fullFrame"": true } }", null, out var optedIn);
+            optedIn.Save(saved);
             cfg = OutputConfig.LoadEffective(newer, saved);
-            Check(cfg.Source == OutputSource.Saved && cfg.HyperHdr.Enabled
-                  && cfg.HyperHdr.VideoCaptureLibrarySha256 == fingerprint,
-                "the package's trusted library fingerprint applies over saved outputs");
-            File.WriteAllText(newer, @"{ ""hyperhdr"": { ""enabled"": false, ""imageWidth"": 48, ""imageHeight"": 27 } }");
+            Check(cfg.Source == OutputSource.Saved && cfg.HyperHdr.FullFrameEnabled,
+                "the full-frame opt-in persists across service restart");
+            OutputConfig.ParseCommand(OutputsBoth, null, out set);
+            set.Save(saved);
 
             // A saved file from an older version, with the image size in it: loads, the size ignored.
             string old = Path.Combine(dir, "outputs.old.json");
@@ -754,8 +896,8 @@ namespace Service
             cfg = OutputConfig.LoadEffective(newer, old);
             Check(cfg.Source == OutputSource.Saved && !cfg.Esp32Enabled && cfg.HyperHdr.Enabled && cfg.HyperHdr.Host == "10.0.0.7"
                   && cfg.HyperHdr.Port == 19401 && cfg.HyperHdr.Priority == 120
-                  && cfg.HyperHdr.ImageWidth == 48 && cfg.HyperHdr.ImageHeight == 27 && cfg.Warnings.Count == 0,
-                "an older saved file with imageWidth / imageHeight loads; those keys are ignored");
+                  && cfg.HyperHdr.ImageWidth == 48 && cfg.HyperHdr.ImageHeight == 27 && !cfg.HyperHdr.FullFrameEnabled && cfg.Warnings.Count == 0,
+                "an older saved file keeps full-frame off and ignores saved image dimensions");
 
             // The package's problems with the image size are still reported over saved outputs,
             // but not its other problems (the saved file replaces those keys).

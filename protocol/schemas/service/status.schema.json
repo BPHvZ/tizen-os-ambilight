@@ -46,7 +46,8 @@
         "enabled": { "type": "boolean", "description": "HyperHDR output is on." },
         "host": { "$ref": "outputs.schema.json#/$defs/hyperhdrHost" },
         "port": { "$ref": "outputs.schema.json#/$defs/hyperhdrPort" },
-        "priority": { "$ref": "outputs.schema.json#/$defs/hyperhdrPriority" }
+        "priority": { "$ref": "outputs.schema.json#/$defs/hyperhdrPriority" },
+        "fullFrame": { "type": "boolean", "description": "Whether isolated full-frame capture is requested; absent in older services." }
       }
     },
     "CaptureState": {

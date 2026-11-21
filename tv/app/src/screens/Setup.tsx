@@ -81,7 +81,7 @@ export function Setup(p: SetupProps) {
       if (!outputs) setError('The Ambilight service is not running, so nothing can be set yet.');
       return false;
     }
-    const s = settingsOf(shown, enableHdr);
+    const s = settingsOf(shown, enableHdr, outputs.hyperhdr.fullFrame);
     if (typeof s === 'string') { setError(s); return false; }
     setBusy(true);
     setError(null);

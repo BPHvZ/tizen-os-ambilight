@@ -747,6 +747,12 @@ export interface HyperHdrOutputSettings {
    * @default 150
    */
   priority?: number
+  /**
+   * Opt in to isolated video-plane capture; PPI remains the fallback.
+   *
+   * @default false
+   */
+  fullFrame?: boolean
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -862,6 +868,8 @@ export interface HyperHdrOutputSettingsInEffect {
    * @default 150
    */
   priority: number
+  /** Whether isolated full-frame capture is requested; absent in older services. */
+  fullFrame?: boolean
 }
 
 /**

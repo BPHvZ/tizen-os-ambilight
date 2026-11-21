@@ -56,7 +56,7 @@ namespace Service
 
         public HyperHdrSettings Settings => _settings;
         public string Endpoint => Invariant($"{_settings.Host}:{_settings.Port}");
-        public string VideoCaptureLibrarySha256 => _settings.VideoCaptureLibrarySha256;
+        public bool FullFrameEnabled => _settings.FullFrameEnabled;
 
         // Number of replies received so far (for tests and diagnostics).
         public long RepliesReceived { get { lock (_stateLock) return _replied; } }
